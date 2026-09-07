@@ -40,6 +40,33 @@ st.markdown(
     overflow: hidden;
     text-overflow: ellipsis;
 }
+/* ===== 高亮底部提问输入框 ===== */
+/* 输入框整体容器：加边框 + 圆角 + 阴影 */
+[data-testid="stChatInput"],
+.stChatInput {
+    border: 2px solid #3399ff !important;
+    border-radius: 14px !important;
+    background-color: #f0f7ff !important;
+    padding: 0.35rem 0.6rem !important;
+    box-shadow: 0 2px 12px rgba(51, 153, 255, 0.30) !important;
+}
+/* 聚焦时更醒目 */
+[data-testid="stChatInput"]:focus-within,
+.stChatInput:focus-within {
+    border-color: #0072e5 !important;
+    box-shadow: 0 0 0 3px rgba(51, 153, 255, 0.25) !important;
+}
+/* 输入框内文字区域背景保持透明，避免双层底色 */
+[data-testid="stChatInput"] textarea,
+.stChatInput textarea {
+    background-color: transparent !important;
+}
+/* 发送按钮配色统一 */
+[data-testid="stChatInput"] button,
+.stChatInput button {
+    background-color: #3399ff !important;
+    border-radius: 8px !important;
+}
 </style>
 """,
     unsafe_allow_html=True,

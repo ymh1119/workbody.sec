@@ -14,6 +14,7 @@ import db_core
 import rag_core
 import session_core
 import plot_core
+import auth_core
 
 # 把当前用户同步到 session_core 使用的 key（兼容老 auth_core）
 def _sync_current_user():
@@ -81,7 +82,7 @@ def render_markdown_with_latex(text):
     st.markdown(text)
 
 
-# 2. 登录认证（保持和原版一致，username 写入 session_state.username）
+# 2. 登录认证（auth_core 提供注册/登录双 tab，密码 PBKDF2 哈希存 Supabase users 表）
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -90,19 +91,40 @@ if "username" not in st.session_state:
 st.sidebar.title("🔐 用户登录")
 
 if not st.session_state.logged_in:
-    username_input = st.sidebar.text_input("👤 用户名")
-    password_input = st.sidebar.text_input("🔑 密码", type="password")
+    tab_login, tab_register = st.sidebar.tabs(["登录", "注册"])
 
-    if st.sidebar.button("登录"):
-        if username_input.strip() and password_input.strip():
-            st.session_state.logged_in = True
-            st.session_state.username = username_input.strip()
-            st.rerun()
-        st.sidebar.error("用户名和密码不能为空！")
+    with tab_login:
+        st.caption("已有账号？直接登录即可。")
+        with st.form("login_form", clear_on_submit=False):
+            login_username = st.text_input("👤 用户名", key="login_username").strip()
+            login_password = st.text_input("🔑 密码", type="password", key="login_password")
+            if st.form_submit_button("登 录", use_container_width=True):
+                ok, msg = auth_core.login_user(login_username, login_password)
+                if ok:
+                    st.session_state.logged_in = True
+                    st.session_state.username = login_username
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+
+    with tab_register:
+        st.caption("首次使用？请创建一个新账号。")
+        with st.form("register_form", clear_on_submit=True):
+            reg_username = st.text_input("👤 设置用户名（≥3 字）", key="reg_username").strip()
+            reg_password = st.text_input("🔑 设置密码（≥6 字）", type="password", key="reg_password")
+            reg_password2 = st.text_input("🔑 再次输入密码", type="password", key="reg_password2")
+            if st.form_submit_button("注 册", use_container_width=True):
+                ok, msg = auth_core.register_user(reg_username, reg_password, reg_password2)
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+
     st.stop()
 else:
     st.sidebar.success(f"欢迎回来：{st.session_state.username}")
-    if st.sidebar.button("退出登录"):
+    if st.sidebar.button("退出登录", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.session_state.current_user = None

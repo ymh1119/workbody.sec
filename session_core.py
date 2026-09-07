@@ -113,8 +113,9 @@ def render_sidebar_history():
         short_title = sid if len(sid) <= 14 else (sid[:14] + "…")
         btn_label = f"{cursor} {short_title}"
 
-        # 用 container 包一下按钮和时间小字
-        with st.sidebar.container():
+        # 跟随调用处的容器上下文（sidebar 根部 或 expander 内部），
+        # 不能写 st.sidebar.container()——那会把内容绕过 expander 漏到侧边栏根部
+        with st.container():
             if st.button(
                 btn_label,
                 key=f"sessbtn_{sid}",
@@ -127,9 +128,10 @@ def render_sidebar_history():
             # 只显示最后活跃时间
             st.caption(f"🕒 {last_time}")
 
-    # 渲染前 N 条
-    for sid in visible_sids:
-        _render_card(sid)
+    # 渲染前 N 条（显式进入 sidebar 上下文，_render_card 才能挂到侧边栏）
+    with st.sidebar:
+        for sid in visible_sids:
+            _render_card(sid)
 
     # 其余折叠
     if hidden_sids:

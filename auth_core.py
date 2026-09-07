@@ -14,14 +14,17 @@ import streamlit as st
 import db_core
 
 
-# ====== 密码哈希（标准库，不依赖 bcrypt 等第三方包） ======
+# ====== 密码哈希 ======
 _HASH_ALGO = "sha256"
-_HASH_ITERATIONS = 120_000  # PBKDF2 迭代次数，抗暴力破解
+_HASH_ITERATIONS = 120_000
 _SALT_BYTES = 16
 
 
 def _hash_password(password: str, salt: str | None = None):
-    """对密码做 PBKDF2 哈希。返回 (hash_hex, salt_hex)。"""
+    """
+    对密码做 PBKDF2 哈希。返回 (hash_hex, salt_hex)。
+    salt 不传时随机生成 16 字节。
+    """
     if salt is None:
         salt = secrets.token_hex(_SALT_BYTES)
     pwd_hash = hashlib.pbkdf2_hmac(
@@ -33,12 +36,15 @@ def _hash_password(password: str, salt: str | None = None):
     return pwd_hash, salt
 
 
-# ====== 业务接口 ======
+# ====== 注册 ======
 def register_user(username: str, password: str, password_confirm: str):
     """
     注册新用户。返回 (success: bool, message: str)。
-    - success=True 表示注册成功；
-    - success=False 表示注册失败，message 为原因。
+
+    参数：
+        username         用户名（≥3 字）
+        password         密码（≥6 字）
+        password_confirm 第二次输入密码
     """
     username = (username or "").strip()
     password = (password or "").strip()
@@ -65,25 +71,26 @@ def register_user(username: str, password: str, password_confirm: str):
         if existing.data:
             return False, "该用户名已被占用，请换一个"
 
-        pwd_hash, salt = _hash_password(password)
+        pwd_hash, pwd_salt = _hash_password(password)
         sb.table("users").insert({
             "username": username,
             "password_hash": pwd_hash,
-            "password_salt": salt,
+            "password_salt": pwd_salt,
+            "role": "student",          # 注册默认是学生；老师账号在 Supabase 后台手动改
             "created_at": db_core._now_str(),
         }).execute()
 
-        return True, f"账号「{username}」注册成功！请切换到登录标签登录。"
+        return True, f"账号「{username}」注册成功！请切换到「登录」标签登录。"
     except Exception as e:
         return False, f"注册失败：{e}"
 
 
+# ====== 登录 ======
 def login_user(username: str, password: str):
     """
-    登录校验。返回 (success: bool, message: str)。
-    - success=True 时 message 为欢迎语；
-    - success=False 时 message 为错误原因（不区分用户不存在 / 密码错误，
-      防止被用于探测账号是否存在）。
+    登录校验。返回 (success, message)。
+    - 失败原因统一为「用户名或密码错误」（防账号探测）。
+    - 登录成功后调用方可继续调 `get_user_role(username)` 获取角色。
     """
     username = (username or "").strip()
     password = (password or "").strip()
@@ -107,8 +114,27 @@ def login_user(username: str, password: str):
         return False, f"登录失败：{e}"
 
 
+# ====== 取用户角色（学生 / 老师），登录后调用一次写进 session_state ======
+def get_user_role(username: str) -> str:
+    """读取某用户的角色，默认 'student'。
+
+    失败（含 column 不存在）一律返回 student，保证 v1 部署对老 users 表向后兼容。
+    """
+    if not username:
+        return "student"
+    try:
+        sb = db_core.get_supabase()
+        result = sb.table("users").select("role").eq("username", username).execute()
+        if result.data:
+            return result.data[0].get("role") or "student"
+    except Exception:
+        pass
+    return "student"
+
+
+# ====== 修改密码（已登录，原密码 → 新密码；UI 上暂未挂出，按需启用） ======
 def change_password(username: str, old_password: str, new_password: str):
-    """改密码（备用，UI 上暂未挂出，按需启用）。"""
+    """改密码。返回 (success, message)。"""
     ok, _ = login_user(username, old_password)
     if not ok:
         return False, "原密码错误"

@@ -100,7 +100,12 @@ def format_docs(docs):
 
 
 def init_rag_system(api_key, expert_mode, pdf_name):
-    """初始化带课本页码检索的对话链。统一调用入口，不再分多套。"""
+    """初始化带课本页码检索的问答函数。
+
+    变化：不再直接返回 chain，而是返回一个 `ask_fn(query, history)`
+    闭包，对外接口变成 `(answer_str, source_docs)` 元组。`source_docs`
+    用于 progress_core 做章节进度统计（带物理页号）。
+    """
     system_prompt = EXPERT_PROMPTS.get(expert_mode, EXPERT_PROMPTS[EXPERT_MODE])
 
     chat_model = st.secrets.get("CHAT_MODEL", "deepseek-v4-flash")
@@ -135,4 +140,22 @@ def init_rag_system(api_key, expert_mode, pdf_name):
         | llm
         | StrOutputParser()
     )
-    return chain
+
+    def ask_fn(query, chat_history):
+        """学生问一个问题的完整调用：返回 (answer, source_docs)。
+
+        - answer: LLM 生成的 Markdown 回答
+        - source_docs: FAISS 命中的 chunks（带物理页号），用于章节进度推断
+          检索失败时返回空列表，绝不抛出导致 UI 卡死。
+        """
+        source_docs = []
+        if retriever:
+            try:
+                source_docs = retriever.invoke(query)
+            except Exception:
+                source_docs = []
+
+        answer = chain.invoke({"query": query, "chat_history": chat_history})
+        return str(answer), source_docs
+
+    return ask_fn

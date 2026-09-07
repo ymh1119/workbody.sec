@@ -1,0 +1,138 @@
+"""信号与系统 AI 助教核心 RAG 模块（统一版）。
+
+变化：
+- 三个专家（答疑 / 出题 / 绘图）合并为一个统一 AI 助教，让模型根据学生提问
+  自动判断意图并切换对应能力，避免冗余切换逻辑。
+- 保留 embedding provider 分离、LangChain 新 API、matplotlib 兼容性清洗等
+  之前会话已确认的修复。
+"""
+import os
+import re
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+from langchain_core.runnables import RunnablePassthrough
+import streamlit as st
+
+# ============================================================
+# 全局：统一的助教标签。新增功能、改提示词都围绕这一常量。
+# ============================================================
+EXPERT_MODE = "📡 信号与系统 AI 助教"
+
+
+# ============================================================
+# 向量库：缓存避免重复加载 PDF
+# ============================================================
+@st.cache_resource
+def get_vectorstore(pdf_path, api_key):
+    """读取 PDF 并构建 FAISS 向量库（注入准确的物理页码）"""
+    if not os.path.exists(pdf_path):
+        st.warning(f"⚠️ 未找到课本文件 {pdf_path}，检索功能将降级为纯对话模式。")
+        return None
+
+    loader = PyPDFLoader(pdf_path)
+    docs = loader.load()
+
+    # 把 LangChain 的 0 基索引转换为用户感知的真实页码
+    for doc in docs:
+        page_num = doc.metadata.get("page", 0) + 1
+        doc.metadata["page_label"] = f"第 {page_num} 页"
+
+    # DeepSeek 不提供 Embedding 接口，单独走第三方 provider。
+    # 推荐配置：硅基流动 + BAAI/bge-large-zh-v1.5。
+    embedding_api_key = st.secrets.get("EMBEDDING_API_KEY", api_key)
+    embedding_base_url = st.secrets.get("EMBEDDING_BASE_URL", "https://api.siliconflow.cn/v1")
+    embedding_model = st.secrets.get("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+
+    embeddings = OpenAIEmbeddings(
+        model=embedding_model,
+        api_key=embedding_api_key,
+        base_url=embedding_base_url,
+        # 关键：非 OpenAI provider 必须关闭 tiktoken，否则返回 400 错误 20015
+        check_embedding_ctx_length=False,
+        encoding_format="float",
+    )
+
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    return vectorstore
+
+
+# ============================================================
+# 系统提示词：答疑 / 出题 / 绘图 三合一
+# ============================================================
+EXPERT_PROMPTS = {
+    EXPERT_MODE: f"""你是《信号与系统》课程的 AI 助教。面对学生的提问，请先判断意图，再调用对应的能力回答。
+
+【你能做的事】
+1. **答疑解惑** —— 用生动的语言和物理直觉讲解概念、公式、定理。
+2. **出题与批改** —— 根据课本章节出练习题，或对学生答案做专业批改和详细解析。
+3. **仿真绘图** —— 在学生想看波形、频谱或系统响应时，生成可运行的 Python + matplotlib 代码。
+
+【课本检索参考内容】
+{{context}}
+
+【回答规范】
+1. 涉及的数学公式必须用标准 LaTeX 语法输出。
+2. 必须在回答中明确指出所依据的课本页码，格式：`📖 参考课本：第 XX 页`。
+3. 回答使用简体中文，专业术语保持准确。
+4. 仅在学生要求绘图时才输出代码：用一段简短中文先说明课本出处和页码，然后**且只能**输出**一段**完整的 Python 代码，包裹在 ```python 和 ``` 之间。
+   - 代码必须以 `import numpy as np` 和 `import matplotlib.pyplot as plt` 开头。
+   - 图表内的标题、坐标轴标签、图例使用英文（matplotlib 默认字体渲染中文会变方框），其他说明文字用中文。
+   - 必须兼容 matplotlib 3.8+：严禁使用已废弃参数（例如 plt.stem() 的 use_line_collection 参数），不要调用 plt.show()。
+""",
+}
+
+
+# ============================================================
+# 工具函数
+# ============================================================
+def format_docs(docs):
+    """把检索到的文档片段与页码拼接为上下文文本"""
+    formatted = []
+    for doc in docs:
+        page = doc.metadata.get("page_label", "未知页码")
+        content = doc.page_content.strip()
+        formatted.append(f"【课本内容 ({page})】:\n{content}")
+    return "\n\n".join(formatted)
+
+
+def init_rag_system(api_key, expert_mode, pdf_name):
+    """初始化带课本页码检索的对话链。统一调用入口，不再分多套。"""
+    system_prompt = EXPERT_PROMPTS.get(expert_mode, EXPERT_PROMPTS[EXPERT_MODE])
+
+    chat_model = st.secrets.get("CHAT_MODEL", "deepseek-v4-flash")
+
+    llm = ChatOpenAI(
+        api_key=api_key,
+        model=chat_model,
+        base_url="https://api.deepseek.com/v1",
+        max_tokens=2048,
+        temperature=0.1,
+    )
+
+    vectorstore = get_vectorstore(pdf_name, api_key)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3}) if vectorstore else None
+
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{query}"),
+    ])
+
+    def get_context(inputs):
+        if retriever:
+            # LangChain 1.x 用 invoke，旧的 get_relevant_documents 已删除
+            docs = retriever.invoke(inputs["query"])
+            return format_docs(docs)
+        return "未找到相关课本上下文。请根据自身知识回答，并在末尾注明'本页未检索到课本上下文'。"
+
+    chain = (
+        RunnablePassthrough.assign(context=get_context)
+        | prompt_template
+        | llm
+        | StrOutputParser()
+    )
+    return chain

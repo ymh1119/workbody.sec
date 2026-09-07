@@ -1,0 +1,11 @@
+streamlit
+langchain
+langchain-openai
+langchain-community
+faiss-cpu
+pypdf
+supabase
+matplotlib
+numpy
+tiktoken
+scipy

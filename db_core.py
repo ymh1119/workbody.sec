@@ -44,10 +44,13 @@ def _normalize_session_id(expert_mode_value, session_id):
 
 
 def log_interaction(username, session_id, query, response):
-    """把一次对话写入数据库。统一 EXPERT_MODE 字段，便于查询分析。"""
+    """把一次对话写入数据库。统一 EXPERT_MODE 字段，便于查询分析。
+
+    返回插入行的 id，供第一次提问后按 id 范围重命名 session 使用。
+    """
     try:
         supabase = get_supabase()
-        supabase.table("chat_logs").insert({
+        result = supabase.table("chat_logs").insert({
             "timestamp": _now_str(),
             "username": username,
             "expert_mode": EXPERT_MODE,
@@ -55,8 +58,11 @@ def log_interaction(username, session_id, query, response):
             "student_query": query,
             "ai_response": response,
         }).execute()
+        if result.data:
+            return result.data[0].get("id")
     except Exception as e:
         st.warning(f"⚠️ 写入云数据库失败（仅本次不持久化）: {e}")
+    return None
 
 
 def load_user_history(username):
@@ -95,21 +101,32 @@ def load_user_history(username):
     return sessions
 
 
-def rename_session_in_db(username, old_title, new_title):
-    """重命名数据库中的会话。注意：老数据按 expert_mode 分层，所以要精准更新。"""
+def rename_session_in_db(username, old_title, new_title, since_id=None):
+    """重命名数据库中的会话。
+
+    - 老数据按 expert_mode 分层，所以要精准更新。
+    - since_id 用于第一次提问时：只重命名 id >= since_id 的记录，
+      避免把更早的同名「默认对话」等旧记录一起改掉。
+    """
     try:
         supabase = get_supabase()
 
         # 新数据：把当前统一 expert_mode 的同名 session 改名
-        supabase.table("chat_logs").update({"session_id": new_title}) \
+        query = supabase.table("chat_logs").update({"session_id": new_title}) \
             .eq("username", username) \
             .eq("expert_mode", EXPERT_MODE) \
-            .eq("session_id", old_title).execute()
+            .eq("session_id", old_title)
+        if since_id is not None:
+            query = query.gte("id", since_id)
+        query.execute()
 
         # 老数据：兼容带前缀的 session（比如 `[🔍] 默认对话`）。
         # 找到所有 session_id 等于 old_title 的行直接改名（兼容极早期未分层的数据）。
-        supabase.table("chat_logs").update({"session_id": new_title}) \
+        query = supabase.table("chat_logs").update({"session_id": new_title}) \
             .eq("username", username) \
-            .eq("session_id", old_title).execute()
+            .eq("session_id", old_title)
+        if since_id is not None:
+            query = query.gte("id", since_id)
+        query.execute()
     except Exception as e:
         st.warning(f"⚠️ 更新对话标题失败: {e}")

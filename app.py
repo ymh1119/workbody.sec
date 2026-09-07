@@ -197,14 +197,21 @@ def _page_chat(PDF_FILE_PATH):
             role = "assistant" if msg["role"] == "assistant" else "user"
             history_for_chain.append((role, msg["content"]))
 
-        # 第一次提问时把「新对话 X」改成问题摘要
-        was_renamed = False
-        if (st.session_state.current_session_id or "").startswith("新对话"):
-            old_sid = st.session_state.current_session_id
+        # 第一次提问时，把空壳会话（「默认对话」或「新对话 X」）改成问题摘要
+        current_sid = st.session_state.current_session_id
+        sessions_map = st.session_state.chat_sessions
+        is_first_question = not sessions_map.get(current_sid, [])
+        needs_rename = (
+            is_first_question
+            and current_sid
+            and (current_sid == "默认对话" or current_sid.startswith("新对话"))
+        )
+
+        old_sid = None
+        new_sid = None
+        if needs_rename:
+            old_sid = current_sid
             new_sid = prompt[:12] + ("…" if len(prompt) > 12 else "")
-            session_core.rename_session_in_memory(old_sid, new_sid)
-            db_core.rename_session_in_db(st.session_state.username, old_sid, new_sid)
-            was_renamed = True
 
         with st.chat_message("user"):
             st.caption(f"🕒 {current_time}")
@@ -242,20 +249,29 @@ def _page_chat(PDF_FILE_PATH):
                         st.code(traceback.format_exc(), language="text")
 
         if ai_reply is not None:
-            # 写对话 + 写进度统计
-            db_core.log_interaction(
+            # 写对话（用旧标题写入，方便后续按 id 范围精确重命名）
+            log_sid = old_sid if needs_rename else current_sid
+            logged_id = db_core.log_interaction(
                 username=st.session_state.username,
-                session_id=st.session_state.current_session_id,
+                session_id=log_sid,
                 query=prompt,
                 response=ai_reply,
             )
+
+            # 第一次提问后，精确重命名本次写入的会话
+            if needs_rename and logged_id is not None:
+                session_core.rename_session_in_memory(old_sid, new_sid)
+                db_core.rename_session_in_db(
+                    st.session_state.username, old_sid, new_sid, since_id=logged_id
+                )
+
             session_core.append_messages([
                 {"role": "user", "content": prompt, "time": current_time},
                 {"role": "assistant", "content": ai_reply, "time": current_time},
             ])
             progress_core.record_progress(st.session_state.username, source_docs)
 
-        if was_renamed:
+        if needs_rename:
             st.rerun()
 
 

@@ -89,7 +89,35 @@ def get_vectorstore(data_path, api_key):
     )
     docs = splitter.split_documents(docs)
 
-    vectorstore = FAISS.from_documents(docs, embeddings)
+    # LangChain 默认 chunk_size=1000 会把上千段拼成一个巨型请求
+    # （约 40 万 tokens），硅基流动处理不过来导致请求挂起、网页长时间转圈。
+    # 改为小批量分批向量化 + 进度条 + 失败重试。
+    texts = [d.page_content for d in docs]
+    metas = [d.metadata for d in docs]
+
+    all_vecs = []
+    batch_size = 32
+    prog = st.progress(0.0, text="正在构建课本索引（首次约 1 分钟，之后走缓存秒开）…")
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i + batch_size]
+        for attempt in range(3):
+            try:
+                all_vecs.extend(embeddings.embed_documents(batch_texts))
+                break
+            except Exception:
+                if attempt == 2:
+                    prog.empty()
+                    st.warning("⚠️ 课本索引构建失败（向量化接口异常），本次降级为纯对话模式。")
+                    return None
+        done = min(i + batch_size, len(texts))
+        prog.progress(done / len(texts), text=f"正在构建课本索引 {done}/{len(texts)} 段…")
+    prog.empty()
+
+    vectorstore = FAISS.from_embeddings(
+        text_embeddings=list(zip(texts, all_vecs)),
+        embedding=embeddings,
+        metadatas=metas,
+    )
     return vectorstore
 
 

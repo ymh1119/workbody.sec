@@ -1,5 +1,6 @@
 streamlit
 langchain
+langchain-text-splitters
 langchain-openai
 langchain-community
 faiss-cpu

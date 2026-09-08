@@ -7,11 +7,11 @@
   之前会话已确认的修复。
 """
 import os
-import re
+import json
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.runnables import RunnablePassthrough
@@ -24,22 +24,42 @@ EXPERT_MODE = "📡 信号与系统 AI 助教"
 
 
 # ============================================================
-# 向量库：缓存避免重复加载 PDF
+# 向量库：缓存避免重复构建（数据来自离线 OCR 的 textbook_pages.json）
 # ============================================================
+# 教材是纯扫描版 PDF（无文字层），无法在线解析。因此先用本地 OCR
+# （RapidOCR, dpi=200）把全书正文转成带页码的 JSON 数据文件，
+# 部署时随仓库一起上传，网页直接读 JSON 建 FAISS 索引。
+# 页码说明：printed_page 是书里印刷的页码（物理页码 - 23），
+# AI 回答中引用的就是印刷页码，和纸质书一一对应。
 @st.cache_resource
-def get_vectorstore(pdf_path, api_key):
-    """读取 PDF 并构建 FAISS 向量库（注入准确的物理页码）"""
-    if not os.path.exists(pdf_path):
-        st.warning(f"⚠️ 未找到课本文件 {pdf_path}，检索功能将降级为纯对话模式。")
+def get_vectorstore(data_path, api_key):
+    """读取 OCR 文本数据并构建 FAISS 向量库（注入印刷页码）"""
+    if not os.path.exists(data_path):
+        st.warning(f"⚠️ 未找到课本数据文件 {data_path}，检索功能将降级为纯对话模式。")
         return None
 
-    loader = PyPDFLoader(pdf_path)
-    docs = loader.load()
+    with open(data_path, encoding="utf-8") as f:
+        data = json.load(f)
 
-    # 把 LangChain 的 0 基索引转换为用户感知的真实页码
-    for doc in docs:
-        page_num = doc.metadata.get("page", 0) + 1
-        doc.metadata["page_label"] = f"第 {page_num} 页"
+    offset = data.get("page_offset", 23)
+    docs = []
+    for p in data.get("pages", []):
+        text = (p.get("text") or "").strip()
+        if not text:
+            continue
+        printed = p.get("printed") or (p["page"] - offset)
+        docs.append(Document(
+            page_content=text,
+            metadata={
+                "page": p["page"],            # PDF 物理页码
+                "printed_page": printed,      # 书上印刷的页码
+                "page_label": f"第 {printed} 页",
+            },
+        ))
+
+    if not docs:
+        st.warning("⚠️ 课本数据文件为空，检索功能将降级为纯对话模式。")
+        return None
 
     # DeepSeek 不提供 Embedding 接口，单独走第三方 provider。
     # 推荐配置：硅基流动 + BAAI/bge-large-zh-v1.5。
@@ -76,7 +96,7 @@ EXPERT_PROMPTS = {
 
 【回答规范】
 1. 涉及的数学公式必须用标准 LaTeX 语法输出。
-2. 必须在回答中明确指出所依据的课本页码，格式：`📖 参考课本：第 XX 页`。
+2. 必须在回答中明确指出所依据的课本页码，格式：`📖 参考课本：第 XX 页`。页码只能取自上方【课本检索参考内容】中标注的页码，严禁自行编造或修改页码；若检索内容与问题无关，回答后注明"本问题未检索到课本内容"。
 3. 回答使用简体中文，专业术语保持准确。
 4. 仅在学生要求绘图时才输出代码：用一段简短中文先说明课本出处和页码，然后**且只能**输出**一段**完整的 Python 代码，包裹在 ```python 和 ``` 之间。
    - 代码必须以 `import numpy as np` 和 `import matplotlib.pyplot as plt` 开头。
@@ -102,9 +122,10 @@ def format_docs(docs):
 def init_rag_system(api_key, expert_mode, pdf_name):
     """初始化带课本页码检索的问答函数。
 
-    变化：不再直接返回 chain，而是返回一个 `ask_fn(query, history)`
-    闭包，对外接口变成 `(answer_str, source_docs)` 元组。`source_docs`
-    用于 progress_core 做章节进度统计（带物理页号）。
+    pdf_name 现在指向 OCR 数据文件（textbook_pages.json）。
+    不再直接返回 chain，而是返回一个 `ask_fn(query, history)`
+    闭包，对外接口是 `(answer_str, source_docs)` 元组。`source_docs`
+    带 printed_page（印刷页码），用于 progress_core 章节进度统计。
     """
     system_prompt = EXPERT_PROMPTS.get(expert_mode, EXPERT_PROMPTS[EXPERT_MODE])
 

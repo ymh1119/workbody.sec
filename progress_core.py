@@ -19,23 +19,26 @@ import db_core
 
 
 # ============================================================
-# 章节目录
+# 章节目录（真实数据：从教材 PDF 书签提取，页码为印刷页码）
 # ============================================================
-# 默认占位字典：起始页号 -> 章节名。
-# PDF: textbook.pdf（744 页信号与系统教材）。
+# 教材：奥本海姆《信号与系统（第二版）》，PDF 共 628 物理页，
+# 印刷页码 = 物理页码 - 23（正文从物理第 24 页 = 印刷第 1 页开始）。
+# 章节起止印刷页码来自 PDF 自带书签，已逐章核对。
 # 用户可直接编辑这个列表调整章节划分，并在 Supabase SQL Editor
 # 用 TRUNCATE student_progress 清空历史统计后即可生效。
 DEFAULT_CHAPTERS = [
-    {"id": 1,  "title": "第1章 信号与系统概述",     "start_page": 1,   "end_page": 30},
-    {"id": 2,  "title": "第2章 连续信号的时域分析", "start_page": 31,  "end_page": 80},
-    {"id": 3,  "title": "第3章 离散信号的时域分析", "start_page": 81,  "end_page": 130},
-    {"id": 4,  "title": "第4章 傅里叶级数与变换",   "start_page": 131, "end_page": 200},
-    {"id": 5,  "title": "第5章 拉普拉斯变换",       "start_page": 201, "end_page": 260},
-    {"id": 6,  "title": "第6章 Z变换",              "start_page": 261, "end_page": 320},
-    {"id": 7,  "title": "第7章 系统函数与频响",     "start_page": 321, "end_page": 380},
-    {"id": 8,  "title": "第8章 状态变量分析",       "start_page": 381, "end_page": 450},
-    {"id": 9,  "title": "第9章 数字滤波器",         "start_page": 451, "end_page": 530},
-    {"id": 10, "title": "第10章 综合与拓展",        "start_page": 531, "end_page": 744},
+    {"id": 1,  "title": "第1章 信号与系统",               "start_page": 1,   "end_page": 47},
+    {"id": 2,  "title": "第2章 线性时不变系统",           "start_page": 48,  "end_page": 109},
+    {"id": 3,  "title": "第3章 周期信号的傅里叶级数表示", "start_page": 110, "end_page": 179},
+    {"id": 4,  "title": "第4章 连续时间傅里叶变换",       "start_page": 180, "end_page": 226},
+    {"id": 5,  "title": "第5章 离散时间傅里叶变换",       "start_page": 227, "end_page": 271},
+    {"id": 6,  "title": "第6章 时域和频域特性",           "start_page": 272, "end_page": 330},
+    {"id": 7,  "title": "第7章 采样",                     "start_page": 331, "end_page": 372},
+    {"id": 8,  "title": "第8章 通信系统",                 "start_page": 373, "end_page": 416},
+    {"id": 9,  "title": "第9章 拉普拉斯变换",             "start_page": 417, "end_page": 473},
+    {"id": 10, "title": "第10章 Z变换",                   "start_page": 474, "end_page": 522},
+    {"id": 11, "title": "第11章 线性反馈系统",            "start_page": 523, "end_page": 580},
+    {"id": 12, "title": "附录与答案",                     "start_page": 581, "end_page": 605},
 ]
 
 
@@ -57,14 +60,20 @@ def get_chapter_by_id(cid):
 def infer_chapter_ids_from_docs(docs):
     """根据 FAISS 命中的 chunks 判断本次问答涉及的章节 ID。
 
-    docs 是 LangChain Document 列表，metadata["page"] 是 PyPDFLoader 给的 0-based 页号。
+    docs 是 LangChain Document 列表。
+    metadata["printed_page"] 是 rag_core 注入的印刷页码（书里印的页码）。
     """
     chapter_ids = set()
     for doc in docs or []:
-        page_zero_based = doc.metadata.get("page", -1)
-        real_page = page_zero_based + 1  # 转 1-based
+        printed = doc.metadata.get("printed_page")
+        if printed is None:
+            # 兼容旧数据：PyPDFLoader 的 0-based 物理页号 + 23 偏移转印刷页
+            p0 = doc.metadata.get("page", -1)
+            if p0 < 0:
+                continue
+            printed = p0 + 1 - 23
         for ch in get_chapters():
-            if ch["start_page"] <= real_page <= ch["end_page"]:
+            if ch["start_page"] <= printed <= ch["end_page"]:
                 chapter_ids.add(ch["id"])
                 break
     return chapter_ids

@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.runnables import RunnablePassthrough
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 import streamlit as st
 
 # ============================================================
@@ -72,9 +73,21 @@ def get_vectorstore(data_path, api_key):
         api_key=embedding_api_key,
         base_url=embedding_base_url,
         # 关键：非 OpenAI provider 必须关闭 tiktoken，否则返回 400 错误 20015
+        # （另一个触发 20015 的原因见下方切片注释：文本超过 512 tokens）
         check_embedding_ctx_length=False,
         encoding_format="float",
     )
+
+    # bge-large-zh-v1.5 最大输入 512 tokens（约 400 汉字）。整页 OCR 文本
+    # 平均 884 字、最长 3184 字，96% 的页超限，直接 embedding 会被
+    # SiliconFlow 拒绝（400 code 20015）。必须先切片，chunk 保留原页码
+    # 元数据，页码引用与章节统计不受影响。
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=400,
+        chunk_overlap=50,
+        separators=["\n", "。", "，", "；", " ", ""],
+    )
+    docs = splitter.split_documents(docs)
 
     vectorstore = FAISS.from_documents(docs, embeddings)
     return vectorstore

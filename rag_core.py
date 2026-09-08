@@ -170,12 +170,17 @@ def init_rag_system(api_key, expert_mode, pdf_name):
     """
     system_prompt = EXPERT_PROMPTS.get(expert_mode, EXPERT_PROMPTS[EXPERT_MODE])
 
+    # 聊天模型默认走 DeepSeek，可全部通过 secrets 切换到任意
+    # OpenAI 兼容服务商（如硅基流动），无需改代码：
+    #   CHAT_MODEL / CHAT_API_KEY / CHAT_BASE_URL
     chat_model = st.secrets.get("CHAT_MODEL", "deepseek-v4-flash")
+    chat_api_key = st.secrets.get("CHAT_API_KEY", api_key)
+    chat_base_url = st.secrets.get("CHAT_BASE_URL", "https://api.deepseek.com/v1")
 
     llm = ChatOpenAI(
-        api_key=api_key,
+        api_key=chat_api_key,
         model=chat_model,
-        base_url="https://api.deepseek.com/v1",
+        base_url=chat_base_url,
         max_tokens=2048,
         temperature=0.1,
     )

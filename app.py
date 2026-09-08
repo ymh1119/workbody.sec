@@ -162,7 +162,7 @@ st.session_state.current_page = st.sidebar.radio(
 # ============================================================
 # 子页 1：💬 答疑对话
 # ============================================================
-def _page_chat(PDF_FILE_PATH):
+def _page_chat(TEXTBOOK_DATA_PATH):
     st.sidebar.markdown(f"### {rag_core.EXPERT_MODE}")
     st.sidebar.caption("答疑 · 出题 · 绘图，一站式 AI 助教")
 
@@ -226,7 +226,7 @@ def _page_chat(PDF_FILE_PATH):
                     ask_fn = rag_core.init_rag_system(
                         api_key=api_key,
                         expert_mode=rag_core.EXPERT_MODE,
-                        pdf_name=PDF_FILE_PATH,
+                        pdf_name=TEXTBOOK_DATA_PATH,
                     )
                     ai_reply, source_docs = ask_fn(prompt, history_for_chain)
 
@@ -398,10 +398,11 @@ def _page_class_overview():
 # ============================================================
 # Dispatcher
 # ============================================================
-PDF_FILE_PATH = "textbook.pdf"
+# 课本数据：离线 OCR 生成的带印刷页码文本（原 PDF 为纯扫描版无文字层）
+TEXTBOOK_DATA_PATH = "textbook_pages.json"
 
 if st.session_state.current_page == "💬 答疑对话":
-    _page_chat(PDF_FILE_PATH)
+    _page_chat(TEXTBOOK_DATA_PATH)
 elif st.session_state.current_page == "📊 我的学习":
     _page_my_progress()
 elif st.session_state.current_page == "👨‍🏫 班级总览":
